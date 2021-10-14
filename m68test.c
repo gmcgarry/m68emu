@@ -1,4 +1,6 @@
 #include <stdio.h>
+
+#include "uart.h"
 #include "m68emu.h"
 
 uint8_t memspace[0x2000];
@@ -81,6 +83,9 @@ uint8_t readfunc(struct M68_CTX *ctx, const uint16_t addr)
 		return 1;	// I/O pad always high
 	}
 
+	if (uart_active(addr))
+		return uart_read(addr);
+
 	return memspace[addr];
 }
 
@@ -95,6 +100,9 @@ void writefunc(struct M68_CTX *ctx, const uint16_t addr, const uint8_t data)
 		printf("#%lu\n", clockcount);
 		printf("%d#", data & 1);
 	}
+
+	if (uart_active(addr))
+		uart_write(addr, data);
 }
 
 int main(int argc, char *argv[])
@@ -118,6 +126,8 @@ int main(int argc, char *argv[])
 	ctx.opdecode  = NULL;
 	m68_init(&ctx, M68_CPU_HC05C4);
 	ctx.trace = true;
+
+	uart_attach(0x0d);
 
 	printf("$timescale 1ns $end\n");
 	printf("$var wire 1 # dq $end\n");
