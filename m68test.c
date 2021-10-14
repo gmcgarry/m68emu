@@ -111,7 +111,7 @@ int main(int argc, char *argv[])
 	int rc;
 
 	if (argc != 2) {
-		printf("m68emu <ihex-file>\n");
+		printf("m68emu <srec-file>\n");
 		return 1;
 	}
 
