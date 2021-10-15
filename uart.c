@@ -72,7 +72,7 @@ uart_read(uint16_t addr)
 		ch = regs[idx];
 	}
 
-	printf("UART: reading reg %d: 0x%02x\n", idx, ch);
+//	printf("UART: reading reg %d: 0x%02x\n", idx, ch);
 
 	return ch;
 }
@@ -82,7 +82,7 @@ uart_write(uint16_t addr, uint8_t data)
 {
 	int idx = addr - baseaddr;
 
-	printf("UART: writing reg %d: 0x%02x\n", idx, data);
+//	printf("UART: writing reg %d: 0x%02x\n", idx, data);
 
 	if (idx == SCDAT) {
 		txreg = data;

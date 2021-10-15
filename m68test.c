@@ -1,14 +1,47 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include <getopt.h>
+
+#include <signal.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 
 #include "uart.h"
 #include "m68emu.h"
 
 uint8_t memspace[0x2000];
 
+M68_CTX ctx;
 uint64_t clockcount = 0;
-double ns_per_clock = 1.e9 / 3.5e6;
+long ns_per_clock = 1000000000LL / 3500000;
+int running = 0;
 
-int verbose = 9;
+int verbose = 0;
+int trace = 0;
+uint16_t breakpoint = 0;
+int skipbpt = 0;
+
+void delay(int cycles)
+{
+	struct timespec ts;
+	ts.tv_sec = 0;
+	ts.tv_nsec = cycles * ns_per_clock;
+
+	while (true) {
+		int rc = nanosleep(&ts, &ts);
+		if (rc == 0)
+			break;
+	}
+}
+
+void
+handler(int sig)
+{
+	running = 0;
+}
 
 int 
 parse_srec(char *filename, uint8_t *mem, int memsize)
@@ -75,7 +108,7 @@ uint8_t readfunc(struct M68_CTX *ctx, const uint16_t addr)
 	if (addr == 0x15c7) {
 		ctx->trace = true;
 	}
-	if (ctx->trace) {
+	if (verbose && ctx->trace) {
 		printf("  MEM RD %04X = %02X\n", addr, memspace[addr]);
 	}
 
@@ -91,7 +124,7 @@ uint8_t readfunc(struct M68_CTX *ctx, const uint16_t addr)
 
 void writefunc(struct M68_CTX *ctx, const uint16_t addr, const uint8_t data)
 {
-	if (ctx->trace) {
+	if (verbose && ctx->trace) {
 		printf("  MEM WR %04X = %02X\n", addr, data);
 	}
 	memspace[addr] = data;
@@ -105,17 +138,80 @@ void writefunc(struct M68_CTX *ctx, const uint16_t addr, const uint8_t data)
 		uart_write(addr, data);
 }
 
+void step()
+{
+	ctx.trace = 1;
+	m68_exec_cycle(&ctx);
+	ctx.trace = 0;
+}
+
+void run()
+{
+	running = 1;
+	while (running) {
+		if (ctx.pc_next == breakpoint && !skipbpt) {
+			skipbpt = 1;
+			printf("breakpoint %04x\n", breakpoint);
+			break;
+		}
+		skipbpt = 0;
+		int cycles = m68_exec_cycle(&ctx);
+		delay(cycles);
+	}
+	if (!skipbpt)
+		step();
+}
+
+void set_breakpoint()
+{
+	skipbpt = 0;
+	breakpoint = 0;
+}
+
+void
+show_registers()
+{
+	printf("A: %02x X: %02x SP: %04x PC: %04x CCR: %02x\n",
+		ctx.reg_acc, ctx.reg_x, ctx.reg_sp, ctx.reg_pc, ctx.reg_ccr);
+}
+
+void
+usage()
+{
+	fprintf(stderr, "Usage: m68em [-v level] [-t] <srec-file>\n");
+}
+
 int main(int argc, char *argv[])
 {
-	M68_CTX ctx;
+	int opt;
 	int rc;
 
-	if (argc != 2) {
-		printf("m68emu <srec-file>\n");
-		return 1;
+	while ((opt = getopt(argc, argv, "v:c:t")) != -1) {
+		switch (opt) {
+		case 'c':
+			ns_per_clock = 1000000000LL / atol(optarg);
+			break;
+		case 'v':
+			verbose = atoi(optarg);
+			break;
+		case 't':
+			trace = 1;
+			break;
+		case 'h':
+			usage();
+			return 0;
+		default:
+			printf("unrecognised argument = %s\n", optarg);
+			return 1;
+		}
 	}
 
-	rc = parse_srec(argv[1], memspace, sizeof(memspace));
+	if (optind >= argc) {
+		usage();
+		return -1;
+	}
+
+	rc = parse_srec(argv[optind], memspace, sizeof(memspace));
 	if (rc < 0) {
 		printf("error parsing srec file\n");
 		return rc;
@@ -125,16 +221,38 @@ int main(int argc, char *argv[])
 	ctx.write_mem = &writefunc;
 	ctx.opdecode  = NULL;
 	m68_init(&ctx, M68_CPU_HC05C4);
-	ctx.trace = true;
+	ctx.trace = trace;
 
 	uart_attach(0x0d);
 
-	printf("$timescale 1ns $end\n");
-	printf("$var wire 1 # dq $end\n");
+	signal(SIGINT, handler);
 
-	do {
-		clockcount += m68_exec_cycle(&ctx);
-	} while (clockcount < 10000);
-	printf("PC: %04x\n", ctx.reg_pc);
+	while (1) {
+		static char line[1024];
+		char *linep = line;
+		size_t len = sizeof(line);
+
+		printf("> ");
+		int n = getline(&linep, &len, stdin);
+		n -= 1;
+		if (n <= 0)
+			continue;
+		// printf("command: \"%.*s\" (%d)\n", n, linep, n);
+		if (strncmp(line, "quit", n) == 0) {
+			break;
+		} else if (strncmp(line, "run", n) == 0) {
+			m68_reset(&ctx);
+			run();
+		} else if (strncmp(line, "continue", n) == 0) {
+			run();
+		} else if (strncmp(line, "step", n) == 0) {
+			step();
+		} else if (strncmp(line, "registers", n) == 0) {
+			show_registers();
+		} else if (strncmp(line, "break", n) == 0) {
+			set_breakpoint();
+		}
+	}
+
 }
 
