@@ -1,26 +1,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
-#include <getopt.h>
-
-#include <signal.h>
+#include <ctype.h>	/* isspace() */
+#include <time.h>	/* nanosleep() */
+#include <getopt.h>	/* getopt() */
+#include <signal.h>	/* signal() */
 #include <sys/ioctl.h>
 #include <termios.h>
 
 #include "uart.h"
 #include "m68emu.h"
 
-uint8_t memspace[0x2000];
+uint8_t *memspace;
 
 M68_CTX ctx;
+unsigned int memsize = 0x2000;
 uint64_t clockcount = 0;
 long ns_per_clock = 1000000000LL / 3500000;
-int running = 0;
+
+
 
 int verbose = 0;
 int trace = 0;
+int running = 0;
+int done = 0;
 uint16_t breakpoint = 0;
 int skipbpt = 0;
 
@@ -67,6 +71,7 @@ void
 handler(int sig)
 {
 	running = 0;
+	skipbpt = 0;
 }
 
 int 
@@ -101,7 +106,7 @@ parse_srec(char *filename, uint8_t *mem, int memsize)
 		sscanf(line + 1, "%1X", &line_type);
 		if (line_type == 0)
 			continue;
-		sscanf(line + 2, "%2X", &line_len); line_len -= 4;
+		sscanf(line + 2, "%2X", &line_len); line_len -= 3;
 		sscanf(line + 4, "%4X", &line_address);
 		if (verbose > 2)
 			printf("Line len %d B, type %d, address 0x%4.4x\n", line_len, line_type, line_address);
@@ -113,7 +118,7 @@ parse_srec(char *filename, uint8_t *mem, int memsize)
 			if (verbose > 2)
 				printf("PM ");
 			if (line_address + line_len > memsize) {
-				printf("line_address = 0x%x, line_len = %x\n", line_address, line_len);
+				fprintf(stderr, "ERROR: address too large for memory space (memsize 0x%x, addr 0x%x, offset 0x%x)\n", memsize, line_address, line_len);
 				return -1;
 			}
 			for (i = 0; i < line_len; i++)
@@ -129,13 +134,14 @@ parse_srec(char *filename, uint8_t *mem, int memsize)
 	return 0;
 }
 
-uint8_t readfunc(struct M68_CTX *ctx, const uint16_t addr)
+uint8_t
+readfunc(struct M68_CTX *ctx, const uint16_t addr)
 {
 	if (addr == 0x15c7) {
 		ctx->trace = true;
 	}
 	if (verbose && ctx->trace) {
-		printf("  MEM RD %04X = %02X\n", addr, memspace[addr]);
+		printf("	MEM RD %04X = %02X\n", addr, memspace[addr]);
 	}
 
 	if (addr == 0) {
@@ -148,10 +154,11 @@ uint8_t readfunc(struct M68_CTX *ctx, const uint16_t addr)
 	return memspace[addr];
 }
 
-void writefunc(struct M68_CTX *ctx, const uint16_t addr, const uint8_t data)
+void
+writefunc(struct M68_CTX *ctx, const uint16_t addr, const uint8_t data)
 {
 	if (verbose && ctx->trace) {
-		printf("  MEM WR %04X = %02X\n", addr, data);
+		printf("	MEM WR %04X = %02X\n", addr, data);
 	}
 	memspace[addr] = data;
 
@@ -164,14 +171,42 @@ void writefunc(struct M68_CTX *ctx, const uint16_t addr, const uint8_t data)
 		uart_write(addr, data);
 }
 
-void step()
+void
+uart_tx(uint8_t data)
 {
-	ctx.trace = 1;
-	m68_exec_cycle(&ctx);
-	ctx.trace = 0;
+	putchar(data);
+	fflush(stdout);
 }
 
-void run()
+
+
+/* --- commands --- */
+
+void
+quit(const char *arg)
+{
+	done = 1;
+}
+
+void
+step(const char *arg)
+{
+	int i;
+
+	int count = 1;
+	if (*arg)
+		count = strtoull(arg, NULL, 10);
+	if (count > 0) {
+		for (i = 0; i < count-1; i++)
+			m68_exec_cycle(&ctx);
+		ctx.trace = 1;
+		m68_exec_cycle(&ctx);
+		ctx.trace = 0;
+	}
+}
+
+void
+cont(const char *arg)
 {
 	running = 1;
 	enable_raw_mode();
@@ -189,45 +224,141 @@ void run()
 
 	}
 	if (!skipbpt)
-		step();
+		step(arg);
 	disable_raw_mode();
 }
 
-void set_breakpoint()
+void
+run(const char *arg)
 {
-	skipbpt = 0;
-	breakpoint = 0;
+	m68_reset(&ctx);
+	cont(arg);
 }
 
 void
-show_registers()
+breakpt(const char *arg)
+{
+	breakpoint = strtoul(arg, NULL, 16);
+	skipbpt = 0;
+}
+
+void
+show(const char *arg)
 {
 	printf("A: %02x X: %02x SP: %04x PC: %04x CCR: %02x\n",
 		ctx.reg_acc, ctx.reg_x, ctx.reg_sp, ctx.reg_pc, ctx.reg_ccr);
 }
 
 void
-uart_tx(uint8_t data)
+dump(const char* arg)
 {
-	putchar(data);
-	fflush(stdout);
+	uint16_t addr = strtoul(arg, NULL, 16);
+	printf("%04X: %02x\n", addr, memspace[addr]);
+}
+
+void
+jump(const char* arg)
+{
+	ctx.reg_pc = strtoul(arg, NULL, 16);
+}
+
+void help(const char* arg);
+
+struct command {
+	char *name;
+	void (*func)(const char* word);
+	char *doc;
+} commands[] = {
+	{ "break", breakpt, "set breakpoint" },
+	{ "continue", cont, "continue execution" },
+	{ "examine", dump, "examine memory location" },
+	{ "goto", jump, "set PC to address" },
+	{ "help", help, "command help" },
+	{ "quit", quit, "exit emulator" },
+	{ "run", run, "reset and start execution" },
+	{ "show", show, "show registers" },
+	{ "step", step, "single step over instruction" },
+};
+#define NCOMMANDS (int)(sizeof(commands)/sizeof(commands[0]))
+
+void
+help(const char* arg)
+{
+	int printed = 0;
+	int i;
+
+	for (i = 0; i < NCOMMANDS; i++) {
+		if (!*arg || (strcmp(arg, commands[i].name) == 0)) {
+			printf("%s\t\t%s.\n", commands[i].name, commands[i].doc);
+			printed++;
+		}
+	}
+
+	if (!printed) {
+		if (*arg)
+			printf ("No commands match `%s'.  Possibilties are:\n", arg);
+		for (i = 0; i < NCOMMANDS; i++)
+			printf("%s\t%s\n", commands[i].name, commands[i].doc);
+	}
+}
+
+void
+execute(char *line)
+{
+	int i, j;
+	struct command *command;
+	char *word;
+
+	i = 0;
+	while (isspace(line[i]))
+		i++;
+	word = line + i;
+
+	while (line[i] && !isspace(line[i]))
+		i++;
+
+	if (line[i])
+		line[i++] = '\0';
+
+	command = NULL;
+	for (j = 0; j < NCOMMANDS; j++) {
+		if (strcmp(word, commands[j].name) == 0) {
+			command = &commands[j];
+			break;
+		}
+	}
+
+	if (!command) {
+		printf("%s: unrecognised command\n", word);
+		return;
+	}
+
+	while (isspace(line[i]))
+		i++;
+	word = line + i;
+
+	(*(command->func))(word);
 }
 
 void
 usage()
 {
-	fprintf(stderr, "Usage: m68em [-v level] [-t] <srec-file>\n");
+	printf("Usage: m68em [-v level] [-t] <srec-file>\n");
 }
 
-int main(int argc, char *argv[])
+int
+main(int argc, char *argv[])
 {
 	int opt;
 	int rc;
 
-	while ((opt = getopt(argc, argv, "v:c:t")) != -1) {
+	while ((opt = getopt(argc, argv, "hc:m:v:t")) != -1) {
 		switch (opt) {
 		case 'c':
 			ns_per_clock = 1000000000LL / atol(optarg);
+			break;
+		case 'm':
+			memsize = strtoul(optarg, NULL, 16);
 			break;
 		case 'v':
 			verbose = atoi(optarg);
@@ -239,25 +370,31 @@ int main(int argc, char *argv[])
 			usage();
 			return 0;
 		default:
-			printf("unrecognised argument = %s\n", optarg);
+			fprintf(stderr, "ERROR: unrecognised argument = %s\n", optarg);
 			return 1;
 		}
 	}
 
 	if (optind >= argc) {
 		usage();
-		return -1;
+		return 1;
 	}
 
-	rc = parse_srec(argv[optind], memspace, sizeof(memspace));
+	memspace = calloc(memsize, 1);
+	if (memspace == NULL) {
+		fprintf(stderr, "ERROR: cannot allocate %u bytes for memory\n", memsize);
+		return 1;
+	}
+
+	rc = parse_srec(argv[optind], memspace, memsize);
 	if (rc < 0) {
-		printf("error parsing srec file\n");
+		fprintf(stderr, "ERROR: cannot parse srec file\n");
 		return rc;
 	}
 
-	ctx.read_mem  = &readfunc;
+	ctx.read_mem	= &readfunc;
 	ctx.write_mem = &writefunc;
-	ctx.opdecode  = NULL;
+	ctx.opdecode	= NULL;
 	m68_init(&ctx, M68_CPU_HC05C4);
 	ctx.trace = trace;
 
@@ -265,9 +402,10 @@ int main(int argc, char *argv[])
 
 	signal(SIGINT, handler);
 
-	while (1) {
-		static char line[1024];
-		char *linep = line;
+	char line[1024];
+	char *linep = line;
+
+	while (!done) {
 		size_t len = sizeof(line);
 
 		printf("> ");
@@ -276,21 +414,10 @@ int main(int argc, char *argv[])
 		if (n <= 0)
 			continue;
 		// printf("command: \"%.*s\" (%d)\n", n, linep, n);
-		if (strncmp(line, "quit", n) == 0) {
-			break;
-		} else if (strncmp(line, "run", n) == 0) {
-			m68_reset(&ctx);
-			run();
-		} else if (strncmp(line, "continue", n) == 0) {
-			run();
-		} else if (strncmp(line, "step", n) == 0) {
-			step();
-		} else if (strncmp(line, "registers", n) == 0) {
-			show_registers();
-		} else if (strncmp(line, "break", n) == 0) {
-			set_breakpoint();
-		}
+		linep[n] = '\0';
+		execute(linep);
 	}
 
+	return 0;
 }
 
