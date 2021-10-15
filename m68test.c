@@ -37,6 +37,32 @@ void delay(int cycles)
 	}
 }
 
+void enable_raw_mode()
+{
+	struct termios term;
+
+	tcgetattr(0, &term);
+	term.c_lflag &= ~(ICANON | ECHO); // Disable echo as well
+	tcsetattr(0, TCSANOW, &term);
+}
+
+void disable_raw_mode()
+{
+	struct termios term;
+
+	tcgetattr(0, &term);
+	term.c_lflag |= ICANON | ECHO;
+	tcsetattr(0, TCSANOW, &term);
+}
+
+bool kbhit()
+{
+	int byteswaiting;
+	ioctl(0, FIONREAD, &byteswaiting);
+	return byteswaiting > 0;
+}
+
+
 void
 handler(int sig)
 {
@@ -148,6 +174,7 @@ void step()
 void run()
 {
 	running = 1;
+	enable_raw_mode();
 	while (running) {
 		if (ctx.pc_next == breakpoint && !skipbpt) {
 			skipbpt = 1;
@@ -157,9 +184,13 @@ void run()
 		skipbpt = 0;
 		int cycles = m68_exec_cycle(&ctx);
 		delay(cycles);
+		if (kbhit())
+			uart_rx(getchar());
+
 	}
 	if (!skipbpt)
 		step();
+	disable_raw_mode();
 }
 
 void set_breakpoint()
@@ -173,6 +204,13 @@ show_registers()
 {
 	printf("A: %02x X: %02x SP: %04x PC: %04x CCR: %02x\n",
 		ctx.reg_acc, ctx.reg_x, ctx.reg_sp, ctx.reg_pc, ctx.reg_ccr);
+}
+
+void
+uart_tx(uint8_t data)
+{
+	putchar(data);
+	fflush(stdout);
 }
 
 void
@@ -223,7 +261,7 @@ int main(int argc, char *argv[])
 	m68_init(&ctx, M68_CPU_HC05C4);
 	ctx.trace = trace;
 
-	uart_attach(0x0d);
+	uart_attach(0x0d, uart_tx);
 
 	signal(SIGINT, handler);
 

@@ -38,17 +38,15 @@ static uint8_t regs[4];
 static uint8_t txreg;
 static uint8_t rxreg;
 
-/* fake up some data in the RX buffer */
-static char Message[] = "hello world";
-static int MIndex = 0;
+static void (*on_write)(uint8_t data);
 
 void
-uart_attach(uint16_t addr)
+uart_attach(uint16_t addr, void (*on_tx)(uint8_t))
 {
 	baseaddr = addr;
+	on_write = on_tx;
 
-	rxreg = (uint8_t)Message[MIndex++];
-	regs[SCSR] |= TDRE|RDRF;
+	regs[SCSR] |= TDRE;
 }
 
 int 
@@ -65,9 +63,7 @@ uart_read(uint16_t addr)
 
 	if (idx == SCDAT) {
 		ch = rxreg;
-		rxreg = (uint8_t)Message[MIndex++];
-		if (MIndex > strlen(Message))
-			regs[SCSR] &= ~RDRF;
+		regs[SCSR] &= ~RDRF;
 	} else {
 		ch = regs[idx];
 	}
@@ -86,9 +82,16 @@ uart_write(uint16_t addr, uint8_t data)
 
 	if (idx == SCDAT) {
 		txreg = data;
-		printf("[%c]", data);
+		if (on_write) on_write(data);
 		regs[SCSR] |= TDRE;
 	} else {
 		regs[idx] = data;
 	}
+}
+
+void
+uart_rx(uint8_t data)
+{
+	rxreg = data;
+	regs[SCSR] |= RDRF;
 }
