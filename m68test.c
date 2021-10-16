@@ -10,7 +10,10 @@
 #include <termios.h>
 
 #include "uart.h"
+#include "acia.h"
+
 #include "m68emu.h"
+
 
 uint8_t *memspace;
 
@@ -150,6 +153,8 @@ readfunc(struct M68_CTX *ctx, const uint16_t addr)
 
 	if (uart_active(addr))
 		return uart_read(addr);
+	if (acia_active(addr))
+		return acia_read(addr);
 
 	return memspace[addr];
 }
@@ -169,6 +174,8 @@ writefunc(struct M68_CTX *ctx, const uint16_t addr, const uint8_t data)
 
 	if (uart_active(addr))
 		uart_write(addr, data);
+	if (acia_active(addr))
+		acia_write(addr, data);
 }
 
 void
@@ -219,8 +226,11 @@ cont(const char *arg)
 		skipbpt = 0;
 		int cycles = m68_exec_cycle(&ctx);
 		delay(cycles);
-		if (kbhit())
-			uart_rx(getchar());
+		if (kbhit()) {
+			int ch = getchar();
+			uart_rx(ch);
+			acia_rx(ch);
+		}
 
 	}
 	if (!skipbpt)
@@ -399,6 +409,7 @@ main(int argc, char *argv[])
 	ctx.trace = trace;
 
 	uart_attach(0x0d, uart_tx);
+	acia_attach(0x17f8, uart_tx);
 
 	signal(SIGINT, handler);
 

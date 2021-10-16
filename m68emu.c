@@ -55,7 +55,7 @@ void m68_reset(M68_CTX *ctx)
 }
 
 
-uint64_t m68_exec_cycle(M68_CTX *ctx)
+int m68_exec_cycle(M68_CTX *ctx)
 {
 	uint8_t opval;
 	M68_OPTABLE_ENT *opcode;
@@ -204,7 +204,10 @@ uint64_t m68_exec_cycle(M68_CTX *ctx)
 		case AMODE_ILLEGAL:
 		case AMODE_MAX:
 			// Illegal instruction
-			assert(1==2);
+			printf("ILLEGAL: pc %04X sp %02X opval %02X mnem '%s' amode %d cycles %d\n",
+				ctx->reg_pc, ctx->reg_sp, opval, opcode->mnem, opcode->amode, opcode->cycles);
+			//assert(1==2);
+			return -1;
 			break;
 	}
 

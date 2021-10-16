@@ -48,6 +48,6 @@ typedef struct M68_CTX {
 
 void m68_init(M68_CTX *ctx, const M68_CPUTYPE cpuType);
 void m68_reset(M68_CTX *ctx);
-uint64_t m68_exec_cycle(M68_CTX *ctx);
+int m68_exec_cycle(M68_CTX *ctx);
 
 #endif // M68EMU_H
