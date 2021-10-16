@@ -22,14 +22,13 @@ unsigned int memsize = 0x2000;
 uint64_t clockcount = 0;
 long ns_per_clock = 1000000000LL / 3500000;
 
-
-
 int verbose = 0;
 int trace = 0;
 int running = 0;
 int done = 0;
 uint16_t breakpoint = 0;
 int skipbpt = 0;
+
 
 void delay(int cycles)
 {
@@ -118,8 +117,6 @@ parse_srec(char *filename, uint8_t *mem, int memsize)
 				sscanf(line + 8 + i * 2, "%2X", &temp);
 				line_content[i] = temp;
 			}
-			if (verbose > 2)
-				printf("PM ");
 			if (line_address + line_len > memsize) {
 				fprintf(stderr, "ERROR: address too large for memory space (memsize 0x%x, addr 0x%x, offset 0x%x)\n", memsize, line_address, line_len);
 				return -1;
@@ -127,11 +124,12 @@ parse_srec(char *filename, uint8_t *mem, int memsize)
 			for (i = 0; i < line_len; i++)
 				mem[line_address + i] = line_content[i];
 		}
-		if (verbose > 2)
+		if (verbose > 2) {
+			printf("PM ");
 			for (i = 0; i < line_len; i++)
 				printf("%2.2X", line_content[i]);
-		if (verbose > 2)
 			printf("\n");
+		}
 	}
 	fclose(sf);
 	return 0;
@@ -204,8 +202,11 @@ step(const char *arg)
 	if (*arg)
 		count = strtoull(arg, NULL, 10);
 	if (count > 0) {
-		for (i = 0; i < count-1; i++)
-			m68_exec_cycle(&ctx);
+		for (i = 0; i < count-1; i++) {
+			int rc = m68_exec_cycle(&ctx);
+			if (rc < 0)
+				return;
+		}
 		ctx.trace = 1;
 		m68_exec_cycle(&ctx);
 		ctx.trace = 0;
@@ -225,6 +226,8 @@ cont(const char *arg)
 		}
 		skipbpt = 0;
 		int cycles = m68_exec_cycle(&ctx);
+		if (cycles < 0)
+			goto bail;
 		delay(cycles);
 		if (kbhit()) {
 			int ch = getchar();
@@ -235,6 +238,7 @@ cont(const char *arg)
 	}
 	if (!skipbpt)
 		step(arg);
+bail:
 	disable_raw_mode();
 }
 
@@ -249,6 +253,13 @@ void
 breakpt(const char *arg)
 {
 	breakpoint = strtoul(arg, NULL, 16);
+	skipbpt = 0;
+}
+
+void
+deletebpt(const char *arg)
+{
+	breakpoint = 0;
 	skipbpt = 0;
 }
 
@@ -281,13 +292,14 @@ struct command {
 } commands[] = {
 	{ "break", breakpt, "set breakpoint" },
 	{ "continue", cont, "continue execution" },
+	{ "delete", deletebpt, "delete breakpoint" },
 	{ "examine", dump, "examine memory location" },
 	{ "goto", jump, "set PC to address" },
 	{ "help", help, "command help" },
 	{ "quit", quit, "exit emulator" },
 	{ "run", run, "reset and start execution" },
 	{ "show", show, "show registers" },
-	{ "step", step, "single step over instruction" },
+	{ "next", step, "single step to next instruction" },
 };
 #define NCOMMANDS (int)(sizeof(commands)/sizeof(commands[0]))
 
@@ -298,8 +310,8 @@ help(const char* arg)
 	int i;
 
 	for (i = 0; i < NCOMMANDS; i++) {
-		if (!*arg || (strcmp(arg, commands[i].name) == 0)) {
-			printf("%s\t\t%s.\n", commands[i].name, commands[i].doc);
+		if (!*arg || strcmp(arg, commands[i].name) == 0) {
+			printf("%-10s\t%s.\n", commands[i].name, commands[i].doc);
 			printed++;
 		}
 	}
@@ -332,7 +344,8 @@ execute(char *line)
 
 	command = NULL;
 	for (j = 0; j < NCOMMANDS; j++) {
-		if (strcmp(word, commands[j].name) == 0) {
+//		if (strncmp(word, commands[j].name) == 0) {
+		if (word[0] == commands[j].name[0]) {
 			command = &commands[j];
 			break;
 		}
