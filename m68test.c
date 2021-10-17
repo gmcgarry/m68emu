@@ -11,6 +11,7 @@
 
 #include "uart.h"
 #include "acia.h"
+#include "timer.h"
 
 #include "m68emu.h"
 
@@ -153,6 +154,8 @@ readfunc(struct M68_CTX *ctx, const uint16_t addr)
 		return uart_read(addr);
 	if (acia_active(addr))
 		return acia_read(addr);
+	if (timer_active(addr))
+		return timer_read(addr);
 
 	return memspace[addr];
 }
@@ -174,6 +177,8 @@ writefunc(struct M68_CTX *ctx, const uint16_t addr, const uint8_t data)
 		uart_write(addr, data);
 	if (acia_active(addr))
 		acia_write(addr, data);
+	if (timer_active(addr))
+		return timer_write(addr, data);
 }
 
 void
@@ -203,9 +208,10 @@ step(const char *arg)
 		count = strtoull(arg, NULL, 10);
 	if (count > 0) {
 		for (i = 0; i < count-1; i++) {
-			int rc = m68_exec_cycle(&ctx);
-			if (rc < 0)
+			int cycles = m68_exec_cycle(&ctx);
+			if (cycles < 0)
 				return;
+			timer_add(cycles);
 		}
 		ctx.trace = 1;
 		m68_exec_cycle(&ctx);
@@ -228,6 +234,7 @@ cont(const char *arg)
 		int cycles = m68_exec_cycle(&ctx);
 		if (cycles < 0)
 			goto bail;
+		timer_add(cycles);
 		delay(cycles);
 		if (kbhit()) {
 			int ch = getchar();
@@ -423,6 +430,7 @@ main(int argc, char *argv[])
 
 	uart_attach(0x0d, uart_tx);
 	acia_attach(0x17f8, uart_tx);
+	timer_attach(0x08);
 
 	signal(SIGINT, handler);
 
